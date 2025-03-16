@@ -8,8 +8,6 @@ ENV/
 # Model checkpoints and runs
 runs/
 *.pt
-checkpoints/
-models/
 
 # Large library files and binaries
 *.dylib
@@ -43,3 +41,7 @@ build/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Large data files
+data/train_wiki.json
+data/val_wiki.json
