@@ -1,0 +1,45 @@
+# Python virtual environment
+venv/
+env/
+ENV/
+.env/
+.venv/
+
+# Model checkpoints and runs
+runs/
+*.pt
+checkpoints/
+models/
+
+# Large library files and binaries
+*.dylib
+*.so
+*.dll
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
