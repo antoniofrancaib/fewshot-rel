@@ -1,0 +1,14 @@
+{
+    "seed": 42,
+    "N_way": 5,
+    "K_shot": 5,
+    "query_size": 15,
+    "context_dim": 100,
+    "inner_steps": 1,
+    "inner_lr": 0.01,
+    "outer_lr": 1e-3,
+    "num_episodes": 100,
+    "meta_batch_size": 1,
+    "log_interval": 10
+  }
+  
