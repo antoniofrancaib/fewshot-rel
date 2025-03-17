@@ -12,6 +12,11 @@ Usage:
 """
 
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # hides TF info & warnings, only shows errors
+
+import warnings
+warnings.filterwarnings("ignore")  # optional: hides *all* Python warnings
+
 import json
 import torch
 import torch.nn as nn
@@ -55,7 +60,7 @@ def adapt_context(model, support_tokens, inner_steps, inner_lr, criterion):
     for _ in range(inner_steps):
         optimizer_inner.zero_grad()
         logits = model(support_tokens["input_ids"], support_tokens["attention_mask"], context_override=adapted_context)
-        loss = criterion(logits, torch.tensor(support_tokens["labels"]).to(logits.device))
+        loss = criterion(logits, support_tokens["labels"].to(logits.device))
         loss.backward()
         optimizer_inner.step()
     return adapted_context.detach()

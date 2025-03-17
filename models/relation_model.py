@@ -8,7 +8,7 @@ This module defines two models:
 
 import torch
 import torch.nn as nn
-from transformers import DistilBertModel
+from transformers import DistilBertModel, BertModel
 
 class RelationClassifierCAVIA(nn.Module):
     def __init__(self, context_dim, num_classes, pretrained_model="distilbert-base-uncased", unfreeze_layers=0):
@@ -23,7 +23,7 @@ class RelationClassifierCAVIA(nn.Module):
         """
         super().__init__()
         # Load DistilBERT encoder
-        self.encoder = DistilBertModel.from_pretrained(pretrained_model)
+        self.encoder = BertModel.from_pretrained(pretrained_model) # DistilBertModel
         
         # First freeze all parameters
         for param in self.encoder.parameters():
@@ -31,9 +31,9 @@ class RelationClassifierCAVIA(nn.Module):
             
         # Selectively unfreeze the last N transformer layers if specified
         if unfreeze_layers > 0:
-            total_layers = len(self.encoder.transformer.layer)
+            total_layers = total_layers = len(self.encoder.encoder.layer)
             for layer_idx in range(total_layers - unfreeze_layers, total_layers):
-                for param in self.encoder.transformer.layer[layer_idx].parameters():
+                for param in self.encoder.encoder.layer[layer_idx].parameters():
                     param.requires_grad = True
                     
         self.hidden_size = self.encoder.config.hidden_size  # typically 768

@@ -81,11 +81,11 @@ if __name__ == "__main__":
     if args.model_type == "cavia":
         # Load CAVIA model.
         # Note: N_way must match the model's classifier output dimension.
-        model = RelationClassifierCAVIA(context_dim=100, num_classes=args.N)
+        model = RelationClassifierCAVIA(context_dim=100, num_classes=args.N, pretrained_model="bert-base-uncased", unfreeze_layers=1)
         model.load_state_dict(torch.load(args.model_checkpoint, map_location=device))
     else:
         # Load baseline model.
-        model = RelationClassifierBaseline(num_classes=args.N, fine_tune_encoder=False)
+        model = RelationClassifierBaseline(num_classes=64, fine_tune_encoder=False)
         model.load_state_dict(torch.load(args.model_checkpoint, map_location=device))
     model.to(device)
     model.eval()
