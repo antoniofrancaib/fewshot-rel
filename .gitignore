@@ -43,5 +43,5 @@ ehthumbs.db
 Thumbs.db
 
 # Large data files
-data/train_wiki.json
-data/val_wiki.json
+# data/train_wiki.json
+# data/val_wiki.json
