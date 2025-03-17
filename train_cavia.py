@@ -20,6 +20,11 @@ from tqdm import tqdm
 from data.fewrel import FewRelDataset
 from models.relation_model import RelationClassifierCAVIA
 from utils import compute_accuracy, set_seed
+from sklearn.metrics import f1_score
+import numpy as np
+from datetime import datetime
+import sys
+import matplotlib.pyplot as plt
 
 import argparse
 
@@ -55,6 +60,77 @@ def adapt_context(model, support_tokens, inner_steps, inner_lr, criterion):
         optimizer_inner.step()
     return adapted_context.detach()
 
+def setup_logging(output_dir):
+    """Setup logging to both file and stdout"""
+    logs_dir = os.path.join(output_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(logs_dir, f"training_log_{timestamp}.txt")
+    
+    # Create a custom logger that writes to both file and stdout
+    class Logger:
+        def __init__(self, filename):
+            self.terminal = sys.stdout
+            self.log = open(filename, "w")
+            
+        def write(self, message):
+            self.terminal.write(message)
+            self.log.write(message)
+            self.log.flush()
+            
+        def flush(self):
+            self.terminal.flush()
+            self.log.flush()
+    
+    sys.stdout = Logger(log_file)
+    return log_file
+
+def compute_f1_score(logits, labels, n_classes):
+    """Compute macro F1-score"""
+    predictions = torch.argmax(logits, dim=1).cpu().numpy()
+    labels = labels.cpu().numpy()
+    return f1_score(labels, predictions, average='macro', labels=range(n_classes))
+
+def save_training_plots(losses, accuracies, output_dir, log_interval):
+    """
+    Create and save training plots.
+    
+    Args:
+        losses (list): List of meta-training losses
+        accuracies (list): List of query accuracies
+        output_dir (str): Directory to save plots
+        log_interval (int): Interval between logged episodes
+    """
+    # Create plots directory if it doesn't exist
+    plots_dir = os.path.join(output_dir, "logs")
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    # Generate x-axis values (episode numbers)
+    episodes = [(i + 1) * log_interval for i in range(len(losses))]
+    
+    # Plot loss curve
+    plt.figure(figsize=(10, 6))
+    plt.plot(episodes, losses, 'b-', label='Meta Loss')
+    plt.xlabel('Episode')
+    plt.ylabel('Loss')
+    plt.title('Meta-Training Loss over Episodes')
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(os.path.join(plots_dir, 'loss_curve.png'))
+    plt.close()
+    
+    # Plot accuracy curve
+    plt.figure(figsize=(10, 6))
+    plt.plot(episodes, accuracies, 'g-', label='Query Accuracy')
+    plt.xlabel('Episode')
+    plt.ylabel('Accuracy')
+    plt.title('Average Query Accuracy over Episodes')
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(os.path.join(plots_dir, 'accuracy_curve.png'))
+    plt.close()
+
 def main():
     args = parse_args()
     # Load configuration.
@@ -64,8 +140,12 @@ def main():
     set_seed(config.get("seed", 42))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Create output directory.
+    # Create output directory and setup logging
     os.makedirs(args.output_dir, exist_ok=True)
+    log_file = setup_logging(args.output_dir)
+    print(f"Logging to: {log_file}")
+    print(f"Configuration: {json.dumps(config, indent=2)}")
+    print(f"Device: {device}")
     
     # Initialize dataset.
     fewrel = FewRelDataset(split="train")
@@ -85,16 +165,23 @@ def main():
     inner_steps = config["inner_steps"]
     inner_lr = config["inner_lr"]
     meta_batch_size = config.get("meta_batch_size", 1)
+    log_interval = config.get("log_interval", 50)
     
     best_val_acc = 0.0
+    best_val_f1 = 0.0
+    
+    # Lists to store metrics for plotting
+    losses = []
+    accuracies = []
     
     # Meta-training loop.
     for episode in tqdm(range(num_episodes), desc="Meta-training"):
         optimizer.zero_grad()
         meta_loss = 0.0
         meta_acc = 0.0
+        meta_f1 = 0.0
         
-        # For each meta-batch (here we use meta_batch_size=1 for simplicity).
+        # For each meta-batch
         for _ in range(meta_batch_size):
             support_set, query_set = fewrel.sample_episode(N_way=N_way, K_shot=K_shot, query_size=query_size)
             support_tokens = fewrel.tokenize_batch(support_set)
@@ -115,24 +202,46 @@ def main():
             loss = criterion(logits, query_labels)
             meta_loss += loss
             
-            # Compute accuracy for reporting.
+            # Compute metrics
             acc = compute_accuracy(logits, query_labels)
+            f1 = compute_f1_score(logits, query_labels, N_way)
             meta_acc += acc
+            meta_f1 += f1
         
         meta_loss = meta_loss / meta_batch_size
         meta_loss.backward()
         optimizer.step()
         
-        if (episode + 1) % config.get("log_interval", 50) == 0:
-            print(f"Episode {episode+1}/{num_episodes} - Meta Loss: {meta_loss.item():.4f}, Query Acc: {meta_acc/meta_batch_size:.2f}")
-            # (Optional) Save a checkpoint if improved.
-            if meta_acc/meta_batch_size > best_val_acc:
-                best_val_acc = meta_acc/meta_batch_size
+        if (episode + 1) % log_interval == 0:
+            avg_acc = meta_acc / meta_batch_size
+            avg_f1 = meta_f1 / meta_batch_size
+            log_msg = (f"Episode {episode+1}/{num_episodes} - "
+                      f"Meta Loss: {meta_loss.item():.4f}, "
+                      f"Query Acc: {avg_acc:.2f}, "
+                      f"Macro F1: {avg_f1:.2f}")
+            print(log_msg)
+            
+            # Store metrics for plotting
+            losses.append(meta_loss.item())
+            accuracies.append(avg_acc)
+            
+            # Save checkpoint if improved
+            if avg_acc > best_val_acc:
+                best_val_acc = avg_acc
+                best_val_f1 = avg_f1
+                print(f"New best model! Acc: {best_val_acc:.2f}, F1: {best_val_f1:.2f}")
                 torch.save(model.state_dict(), os.path.join(args.output_dir, "best_model.pt"))
     
-    # Save final model.
+    # Save final model and print final results
     torch.save(model.state_dict(), os.path.join(args.output_dir, "final_model.pt"))
-    print("Meta-training complete.")
+    print("\nTraining completed!")
+    print(f"Best validation accuracy: {best_val_acc:.2f}")
+    print(f"Best validation macro F1-score: {best_val_f1:.2f}")
+    print(f"Log file saved at: {log_file}")
+    
+    # Generate and save plots
+    save_training_plots(losses, accuracies, args.output_dir, log_interval)
+    print("Training plots saved in the logs directory.")
 
 if __name__ == "__main__":
     main()
