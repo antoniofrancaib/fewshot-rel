@@ -2,7 +2,7 @@
     "seed": 42,
     "N_way": 5,
     "K_shot": 5,
-    "fine_tune_encoder": false,
+    "fine_tune_encoder": true,
     "lr": 2e-5,
     "num_epochs": 10,
     "batch_size": 16

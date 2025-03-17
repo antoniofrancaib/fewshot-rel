@@ -30,7 +30,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     return parser.parse_args()
 
-def evaluate_episode(model, fewrel, N, K, query_size, device, inner_steps=1, inner_lr=0.01, model_type="cavia"):
+def evaluate_episode(model, fewrel, N, K, query_size, device, inner_steps=5, inner_lr=0.001, model_type="cavia"):
     # Sample an episode.
     support_set, query_set = fewrel.sample_episode(N_way=N, K_shot=K, query_size=query_size)
     support_tokens = fewrel.tokenize_batch(support_set)

@@ -11,7 +11,7 @@ import torch.nn as nn
 from transformers import DistilBertModel
 
 class RelationClassifierCAVIA(nn.Module):
-    def __init__(self, context_dim, num_classes, pretrained_model="distilbert-base-uncased"):
+    def __init__(self, context_dim, num_classes, pretrained_model="distilbert-base-uncased", unfreeze_layers=0):
         """
         Initializes the CAVIA-based relation classifier.
         
@@ -19,12 +19,23 @@ class RelationClassifierCAVIA(nn.Module):
             context_dim (int): Dimension of the context vector φ.
             num_classes (int): Number of classes in the episode.
             pretrained_model (str): Pretrained transformer model name.
+            unfreeze_layers (int): Number of top transformer layers to unfreeze (0 means all frozen).
         """
         super().__init__()
-        # Load DistilBERT encoder and freeze parameters.
+        # Load DistilBERT encoder
         self.encoder = DistilBertModel.from_pretrained(pretrained_model)
+        
+        # First freeze all parameters
         for param in self.encoder.parameters():
             param.requires_grad = False
+            
+        # Selectively unfreeze the last N transformer layers if specified
+        if unfreeze_layers > 0:
+            total_layers = len(self.encoder.transformer.layer)
+            for layer_idx in range(total_layers - unfreeze_layers, total_layers):
+                for param in self.encoder.transformer.layer[layer_idx].parameters():
+                    param.requires_grad = True
+                    
         self.hidden_size = self.encoder.config.hidden_size  # typically 768
         
         self.context_dim = context_dim

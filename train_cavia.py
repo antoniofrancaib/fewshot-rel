@@ -155,7 +155,7 @@ def main():
     query_size = config.get("query_size", 15)
     
     # Initialize model.
-    model = RelationClassifierCAVIA(context_dim=config["context_dim"], num_classes=N_way)
+    model = RelationClassifierCAVIA(context_dim=config["context_dim"], num_classes=N_way, pretrained_model="bert-base-uncased", unfreeze_layers=config["unfreeze_layers"])
     model.to(device)
     
     criterion = nn.CrossEntropyLoss()
