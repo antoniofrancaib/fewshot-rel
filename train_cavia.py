@@ -39,7 +39,7 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="runs/cavia_experiment", help="Directory to save model checkpoints and logs.")
     return parser.parse_args()
 
-def adapt_context(model, support_tokens, inner_steps, inner_lr, criterion):
+def adapt_context(model, support_tokens, inner_steps, inner_lr, criterion, grad_clip=1.0):
     """
     Performs inner-loop adaptation on the support set by updating the context vector.
     
@@ -49,20 +49,28 @@ def adapt_context(model, support_tokens, inner_steps, inner_lr, criterion):
         inner_steps (int): Number of adaptation steps.
         inner_lr (float): Learning rate for inner-loop.
         criterion: Loss function.
+        grad_clip (float): Gradient clipping value.
     
     Returns:
         adapted_context: The updated context vector.
     """
-    # Clone the initial context.
+    # Clone the initial context
     adapted_context = model.context.clone().detach().requires_grad_(True)
-    optimizer_inner = optim.SGD([adapted_context], lr=inner_lr)
+    
+    # Use Adam optimizer for inner loop
+    optimizer_inner = optim.Adam([adapted_context], lr=inner_lr)
     
     for _ in range(inner_steps):
         optimizer_inner.zero_grad()
         logits = model(support_tokens["input_ids"], support_tokens["attention_mask"], context_override=adapted_context)
         loss = criterion(logits, support_tokens["labels"].to(logits.device))
         loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(adapted_context, grad_clip)
+        
         optimizer_inner.step()
+    
     return adapted_context.detach()
 
 def setup_logging(output_dir):
@@ -136,9 +144,61 @@ def save_training_plots(losses, accuracies, output_dir, log_interval):
     plt.savefig(os.path.join(plots_dir, 'accuracy_curve.png'))
     plt.close()
 
+def evaluate_model(model, dataset, N_way, K_shot, query_size, num_episodes, device):
+    """
+    Evaluates the model on validation episodes.
+    
+    Args:
+        model: The CAVIA model.
+        dataset: FewRelDataset instance.
+        N_way (int): Number of classes per episode.
+        K_shot (int): Number of support examples per class.
+        query_size (int): Number of query examples per class.
+        num_episodes (int): Number of evaluation episodes.
+        device: PyTorch device.
+    
+    Returns:
+        avg_acc: Average accuracy across episodes.
+        avg_f1: Average F1 score across episodes.
+    """
+    model.eval()
+    total_acc = 0.0
+    total_f1 = 0.0
+    
+    with torch.no_grad():
+        for _ in range(num_episodes):
+            support_set, query_set = dataset.sample_episode(N_way=N_way, K_shot=K_shot, query_size=query_size)
+            if not support_set or not query_set:
+                continue
+                
+            support_tokens = dataset.tokenize_batch(support_set)
+            query_tokens = dataset.tokenize_batch(query_set)
+            
+            # Move tensors to device
+            for key in support_tokens:
+                support_tokens[key] = support_tokens[key].to(device)
+            for key in query_tokens:
+                query_tokens[key] = query_tokens[key].to(device)
+            
+            # Adapt context on support set
+            adapted_context = adapt_context(model, support_tokens, config["inner_steps"], config["inner_lr"], criterion, config["grad_clip"])
+            
+            # Evaluate on query set
+            logits = model(query_tokens["input_ids"], query_tokens["attention_mask"], context_override=adapted_context)
+            query_labels = query_tokens["labels"].to(device)
+            
+            acc = compute_accuracy(logits, query_labels)
+            f1 = compute_f1_score(logits, query_labels, N_way)
+            
+            total_acc += acc
+            total_f1 += f1
+    
+    model.train()
+    return total_acc / num_episodes, total_f1 / num_episodes
+
 def main():
     args = parse_args()
-    # Load configuration.
+    # Load configuration
     with open(args.config, "r") as f:
         config = json.load(f)
     
@@ -152,15 +212,21 @@ def main():
     print(f"Configuration: {json.dumps(config, indent=2)}")
     print(f"Device: {device}")
     
-    # Initialize dataset.
-    fewrel = FewRelDataset(split="train")
+    # Initialize datasets
+    train_dataset = FewRelDataset(split="train")
+    val_dataset = FewRelDataset(split="validation")
     
     N_way = config["N_way"]
     K_shot = config["K_shot"]
     query_size = config.get("query_size", 15)
     
-    # Initialize model.
-    model = RelationClassifierCAVIA(context_dim=config["context_dim"], num_classes=N_way, pretrained_model="bert-base-uncased", unfreeze_layers=config["unfreeze_layers"])
+    # Initialize model
+    model = RelationClassifierCAVIA(
+        context_dim=config["context_dim"],
+        num_classes=N_way,
+        pretrained_model="bert-base-uncased",
+        unfreeze_layers=config["unfreeze_layers"]
+    )
     model.to(device)
     
     criterion = nn.CrossEntropyLoss()
@@ -174,12 +240,13 @@ def main():
     
     best_val_acc = 0.0
     best_val_f1 = 0.0
+    patience_counter = 0
     
     # Lists to store metrics for plotting
     losses = []
     accuracies = []
     
-    # Meta-training loop.
+    # Meta-training loop
     for episode in tqdm(range(num_episodes), desc="Meta-training"):
         optimizer.zero_grad()
         meta_loss = 0.0
@@ -188,22 +255,25 @@ def main():
         
         # For each meta-batch
         for _ in range(meta_batch_size):
-            support_set, query_set = fewrel.sample_episode(N_way=N_way, K_shot=K_shot, query_size=query_size)
-            support_tokens = fewrel.tokenize_batch(support_set)
-            query_tokens = fewrel.tokenize_batch(query_set)
+            support_set, query_set = train_dataset.sample_episode(N_way=N_way, K_shot=K_shot, query_size=query_size)
+            if not support_set or not query_set:
+                continue
+                
+            support_tokens = train_dataset.tokenize_batch(support_set)
+            query_tokens = train_dataset.tokenize_batch(query_set)
             
-            # Move tensors to device.
+            # Move tensors to device
             for key in support_tokens:
                 support_tokens[key] = support_tokens[key].to(device)
             for key in query_tokens:
                 query_tokens[key] = query_tokens[key].to(device)
             
-            # Inner loop: adapt context on support set.
-            adapted_context = adapt_context(model, support_tokens, inner_steps, inner_lr, criterion)
+            # Inner loop: adapt context on support set
+            adapted_context = adapt_context(model, support_tokens, inner_steps, inner_lr, criterion, config["grad_clip"])
             
-            # Outer loop: compute loss on query set using the adapted context.
+            # Outer loop: compute loss on query set using the adapted context
             logits = model(query_tokens["input_ids"], query_tokens["attention_mask"], context_override=adapted_context)
-            query_labels = torch.tensor(query_tokens["labels"]).to(device)
+            query_labels = query_tokens["labels"].to(device)
             loss = criterion(logits, query_labels)
             meta_loss += loss
             
@@ -215,6 +285,10 @@ def main():
         
         meta_loss = meta_loss / meta_batch_size
         meta_loss.backward()
+        
+        # Gradient clipping for outer loop
+        torch.nn.utils.clip_grad_norm_(model.parameters(), config["grad_clip"])
+        
         optimizer.step()
         
         if (episode + 1) % log_interval == 0:
@@ -230,12 +304,25 @@ def main():
             losses.append(meta_loss.item())
             accuracies.append(avg_acc)
             
-            # Save checkpoint if improved
-            if avg_acc > best_val_acc:
-                best_val_acc = avg_acc
-                best_val_f1 = avg_f1
+            # Evaluate on validation set
+            val_acc, val_f1 = evaluate_model(
+                model, val_dataset, N_way, K_shot, query_size,
+                config["validation_episodes"], device
+            )
+            print(f"Validation - Acc: {val_acc:.2f}, F1: {val_f1:.2f}")
+            
+            # Early stopping check
+            if val_acc > best_val_acc + config["min_delta"]:
+                best_val_acc = val_acc
+                best_val_f1 = val_f1
                 print(f"New best model! Acc: {best_val_acc:.2f}, F1: {best_val_f1:.2f}")
                 torch.save(model.state_dict(), os.path.join(args.output_dir, "best_model.pt"))
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= config["patience"]:
+                    print(f"Early stopping triggered after {episode + 1} episodes")
+                    break
     
     # Save final model and print final results
     torch.save(model.state_dict(), os.path.join(args.output_dir, "final_model.pt"))
