@@ -30,13 +30,14 @@ import numpy as np
 from datetime import datetime
 import sys
 import matplotlib.pyplot as plt
-
 import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/cavia_config.json", help="Path to config JSON file.")
-    parser.add_argument("--output_dir", type=str, default="runs/cavia_experiment", help="Directory to save model checkpoints and logs.")
+    parser.add_argument("--config", type=str, default="configs/cavia_config.json",
+                        help="Path to config JSON file.")
+    parser.add_argument("--output_dir", type=str, default="runs/cavia_experiment",
+                        help="Directory to save model checkpoints and logs.")
     return parser.parse_args()
 
 def adapt_context(model, support_tokens, inner_steps, inner_lr, criterion, grad_clip=1.0):
@@ -62,7 +63,11 @@ def adapt_context(model, support_tokens, inner_steps, inner_lr, criterion, grad_
     
     for _ in range(inner_steps):
         optimizer_inner.zero_grad()
-        logits = model(support_tokens["input_ids"], support_tokens["attention_mask"], context_override=adapted_context)
+        logits = model(
+            support_tokens["input_ids"],
+            support_tokens["attention_mask"],
+            context_override=adapted_context
+        )
         loss = criterion(logits, support_tokens["labels"].to(logits.device))
         loss.backward()
         
@@ -81,7 +86,6 @@ def setup_logging(output_dir):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = os.path.join(logs_dir, f"training_log_{timestamp}.txt")
     
-    # Create a custom logger that writes to both file and stdout
     class Logger:
         def __init__(self, filename):
             self.terminal = sys.stdout
@@ -115,11 +119,9 @@ def save_training_plots(losses, accuracies, output_dir, log_interval):
         output_dir (str): Directory to save plots
         log_interval (int): Interval between logged episodes
     """
-    # Create plots directory if it doesn't exist
     plots_dir = os.path.join(output_dir, "logs")
     os.makedirs(plots_dir, exist_ok=True)
     
-    # Generate x-axis values (episode numbers)
     episodes = [(i + 1) * log_interval for i in range(len(losses))]
     
     # Plot loss curve
@@ -144,7 +146,8 @@ def save_training_plots(losses, accuracies, output_dir, log_interval):
     plt.savefig(os.path.join(plots_dir, 'accuracy_curve.png'))
     plt.close()
 
-def evaluate_model(model, dataset, N_way, K_shot, query_size, num_episodes, device):
+def evaluate_model(model, dataset, N_way, K_shot, query_size, num_episodes,
+                   device, config, criterion):
     """
     Evaluates the model on validation episodes.
     
@@ -156,6 +159,8 @@ def evaluate_model(model, dataset, N_way, K_shot, query_size, num_episodes, devi
         query_size (int): Number of query examples per class.
         num_episodes (int): Number of evaluation episodes.
         device: PyTorch device.
+        config (dict): The loaded config with inner_steps, inner_lr, grad_clip, etc.
+        criterion: Loss function.
     
     Returns:
         avg_acc: Average accuracy across episodes.
@@ -181,10 +186,21 @@ def evaluate_model(model, dataset, N_way, K_shot, query_size, num_episodes, devi
                 query_tokens[key] = query_tokens[key].to(device)
             
             # Adapt context on support set
-            adapted_context = adapt_context(model, support_tokens, config["inner_steps"], config["inner_lr"], criterion, config["grad_clip"])
+            adapted_context = adapt_context(
+                model,
+                support_tokens,
+                config["inner_steps"],
+                config["inner_lr"],
+                criterion,
+                config["grad_clip"]
+            )
             
             # Evaluate on query set
-            logits = model(query_tokens["input_ids"], query_tokens["attention_mask"], context_override=adapted_context)
+            logits = model(
+                query_tokens["input_ids"],
+                query_tokens["attention_mask"],
+                context_override=adapted_context
+            )
             query_labels = query_tokens["labels"].to(device)
             
             acc = compute_accuracy(logits, query_labels)
@@ -198,14 +214,12 @@ def evaluate_model(model, dataset, N_way, K_shot, query_size, num_episodes, devi
 
 def main():
     args = parse_args()
-    # Load configuration
     with open(args.config, "r") as f:
         config = json.load(f)
     
     set_seed(config.get("seed", 42))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Create output directory and setup logging
     os.makedirs(args.output_dir, exist_ok=True)
     log_file = setup_logging(args.output_dir)
     print(f"Logging to: {log_file}")
@@ -255,7 +269,9 @@ def main():
         
         # For each meta-batch
         for _ in range(meta_batch_size):
-            support_set, query_set = train_dataset.sample_episode(N_way=N_way, K_shot=K_shot, query_size=query_size)
+            support_set, query_set = train_dataset.sample_episode(
+                N_way=N_way, K_shot=K_shot, query_size=query_size
+            )
             if not support_set or not query_set:
                 continue
                 
@@ -269,10 +285,21 @@ def main():
                 query_tokens[key] = query_tokens[key].to(device)
             
             # Inner loop: adapt context on support set
-            adapted_context = adapt_context(model, support_tokens, inner_steps, inner_lr, criterion, config["grad_clip"])
+            adapted_context = adapt_context(
+                model,
+                support_tokens,
+                inner_steps,
+                inner_lr,
+                criterion,
+                config["grad_clip"]
+            )
             
             # Outer loop: compute loss on query set using the adapted context
-            logits = model(query_tokens["input_ids"], query_tokens["attention_mask"], context_override=adapted_context)
+            logits = model(
+                query_tokens["input_ids"],
+                query_tokens["attention_mask"],
+                context_override=adapted_context
+            )
             query_labels = query_tokens["labels"].to(device)
             loss = criterion(logits, query_labels)
             meta_loss += loss
@@ -283,7 +310,9 @@ def main():
             meta_acc += acc
             meta_f1 += f1
         
-        meta_loss = meta_loss / meta_batch_size
+        if meta_batch_size > 0:
+            meta_loss = meta_loss / meta_batch_size
+        
         meta_loss.backward()
         
         # Gradient clipping for outer loop
@@ -291,13 +320,16 @@ def main():
         
         optimizer.step()
         
+        # Logging
         if (episode + 1) % log_interval == 0:
-            avg_acc = meta_acc / meta_batch_size
-            avg_f1 = meta_f1 / meta_batch_size
-            log_msg = (f"Episode {episode+1}/{num_episodes} - "
-                      f"Meta Loss: {meta_loss.item():.4f}, "
-                      f"Query Acc: {avg_acc:.2f}, "
-                      f"Macro F1: {avg_f1:.2f}")
+            avg_acc = meta_acc / meta_batch_size if meta_batch_size > 0 else 0
+            avg_f1 = meta_f1 / meta_batch_size if meta_batch_size > 0 else 0
+            log_msg = (
+                f"Episode {episode+1}/{num_episodes} - "
+                f"Meta Loss: {meta_loss.item():.4f}, "
+                f"Query Acc: {avg_acc:.2f}, "
+                f"Macro F1: {avg_f1:.2f}"
+            )
             print(log_msg)
             
             # Store metrics for plotting
@@ -306,8 +338,15 @@ def main():
             
             # Evaluate on validation set
             val_acc, val_f1 = evaluate_model(
-                model, val_dataset, N_way, K_shot, query_size,
-                config["validation_episodes"], device
+                model,
+                val_dataset,
+                N_way,
+                K_shot,
+                query_size,
+                config["validation_episodes"],
+                device,
+                config,    # pass config
+                criterion  # pass criterion
             )
             print(f"Validation - Acc: {val_acc:.2f}, F1: {val_f1:.2f}")
             
@@ -324,7 +363,7 @@ def main():
                     print(f"Early stopping triggered after {episode + 1} episodes")
                     break
     
-    # Save final model and print final results
+    # Save final model
     torch.save(model.state_dict(), os.path.join(args.output_dir, "final_model.pt"))
     print("\nTraining completed!")
     print(f"Best validation accuracy: {best_val_acc:.2f}")
